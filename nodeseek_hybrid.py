@@ -1,731 +1,523 @@
-# -*- coding: utf-8 -*-
-"""
-NodeSeek Hybrid Auto Signin Script
-融合三个脚本优势的混合签到器 - GitHub Actions 优化版
-
-Features:
-- 渐进式 Fallback: HTTP → Proxy → Selenium 
-- 多账户批处理 (来自 nodeseek_sign.py)
-- 环境检测与优化 (GitHub Actions / Qinglong / Local)
-- Cookie 自动管理与持久化
-- 可选的30天统计追踪
-- 无需验证码服务依赖
-
-Author: Based on multiple NodeSeek signin scripts
-License: MIT
-"""
-
-import os
-import time
 import json
-import random
-import traceback
 import logging
-from datetime import datetime, timedelta
-from typing import Dict, List, Tuple, Optional, Any
-from dataclasses import dataclass
+import os
+import random
+import sys
+import time
+import traceback
+from dataclasses import dataclass, field
+from typing import Callable, List, Optional, Tuple
 
-# 尝试导入HTTP库 (优先使用 curl_cffi)
-try:
-    from curl_cffi import requests as cf_requests
-    USE_CURL_CFFI = True
-    print("✅ 使用 curl_cffi 增强 Cloudflare 绕过能力")
-except ImportError:
-    import requests as cf_requests
-    USE_CURL_CFFI = False
-    print("⚠️  使用 requests 库 (建议安装 curl_cffi)")
+from curl_cffi import requests as cf_requests
+from curl_cffi.requests import Session as CfSession
+from playwright.sync_api import Browser, BrowserContext, Page, Playwright, sync_playwright
 
-# 尝试导入 Selenium (fallback 使用)
-SELENIUM_AVAILABLE = False
-try:
-    from selenium import webdriver
-    from selenium.webdriver.common.by import By
-    from selenium.webdriver.support.ui import WebDriverWait
-    from selenium.webdriver.support import expected_conditions as EC
-    from selenium.webdriver.chrome.options import Options
-    import undetected_chromedriver as uc
-    SELENIUM_AVAILABLE = True
-    print("✅ Selenium 终极 Fallback 可用")
-except ImportError:
-    print("⚠️  Selenium 不可用 (GitHub Actions 中会自动安装)")
-
-# 通知模块动态加载
-try:
-    from notify import send
-    NOTIFICATION_AVAILABLE = True
-except ImportError:
-    NOTIFICATION_AVAILABLE = False
-    def send(title, content):
-        print(f"📢 {title}: {content}")
-
-# Telegram Bot 推送功能
-def send_telegram_message(message: str, parse_mode: str = "HTML"):
-    """发送Telegram消息"""
-    bot_token = os.environ.get("TG_BOT_TOKEN", "")
-    chat_id = os.environ.get("TG_CHAT_ID", "")
-    
-    if not bot_token or not chat_id:
-        logging.warning("⚠️  TG_BOT_TOKEN 或 TG_CHAT_ID 未配置，跳过TG推送")
-        return False
-    
-    try:
-        import requests as py_requests
-        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        data = {
-            "chat_id": chat_id,
-            "text": message,
-            "parse_mode": parse_mode
-        }
-        
-        response = py_requests.post(url, json=data, timeout=10)
-        if response.status_code == 200:
-            logging.info("✅ TG消息发送成功")
-            return True
-        else:
-            logging.error(f"❌ TG消息发送失败: {response.status_code}")
-            return False
-    except Exception as e:
-        logging.error(f"❌ TG推送异常: {str(e)}")
-        return False
-
-# 配置日志
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler()]
+    handlers=[logging.StreamHandler()],
 )
+
+# Pinned TLS fingerprint. When CF starts blocking this version, bump it
+# (curl_cffi ships a newer firefox entry on each release).
+IMPERSONATE_VERSIONS: List[str] = ["firefox147"]
+
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/146.0.0.0 Safari/537.36"
+)
+
+
+# ---------------------------------------------------------------------------
+# Data models
+# ---------------------------------------------------------------------------
+
 
 @dataclass
 class SigninResult:
-    """签到结果数据类"""
     success: bool
     message: str
-    method: str  # 'http', 'proxy', 'selenium'
-    cookie_expired: bool = False  # Cookie是否过期
-    statistics: Optional[Dict] = None
+    method: str
+    cookie_expired: bool = False
+    statistics: Optional[dict] = None
 
-@dataclass  
+
+@dataclass
 class AccountConfig:
-    """账户配置数据类"""
     index: int
     display_name: str
-    cookie: str
+    cookie: str = ""
     username: str = ""
     password: str = ""
 
-class EnvironmentDetector:
-    """环境检测器"""
-    
-    @staticmethod
-    def detect_environment() -> str:
-        """检测当前运行环境"""
-        # 检测青龙面板
-        ql_markers = ['/ql/data/', '/ql/config/', '/ql/', '/.ql/']
-        for path in ql_markers:
-            if os.path.exists(path):
-                return "qinglong"
-        
-        # 检测 GitHub Actions
-        if os.environ.get("GITHUB_ACTIONS") == "true":
-            return "github"
-        
-        return "local"
 
-    @staticmethod
-    def get_env_config() -> Dict[str, Any]:
-        """获取环境特定配置"""
-        env_type = EnvironmentDetector.detect_environment()
-        
-        config = {
-            'environment': env_type,
-            'enable_statistics': os.environ.get("ENABLE_STATISTICS", "true").lower() == "true",
-            'enable_selenium': os.environ.get("ENABLE_SELENIUM", "auto"),
-            'proxy_url': os.environ.get("PROXY_URL", ""),
-            'random_mode': os.environ.get("NS_RANDOM", "true").lower() == "true",
-            'headless': os.environ.get("HEADLESS", "true").lower() == "true",
-            'timeout': int(os.environ.get("TIMEOUT", "30")),
-        }
-        
-        # GitHub Actions 特定优化
-        if env_type == "github":
-            config.update({
-                'enable_selenium': config['enable_selenium'] if config['enable_selenium'] != "auto" else "true",
-                'timeout': min(config['timeout'], 120),  # GitHub Actions 限制
-            })
-        
-        return config
+@dataclass
+class SigninStats:
+    total_amount: float
+    average: float
+    days_count: int
+    period: str
 
-class StatisticsTracker:
-    """签到统计追踪器"""
-    
-    def __init__(self, cookie: str):
-        self.cookie = cookie
-        
-    def get_signin_stats(self, days: int = 30) -> Tuple[Optional[Dict], str]:
-        """获取签到统计 (来自 nodeseek_sign.py)"""
-        if not self.cookie:
-            return None, "无有效Cookie"
-        
+
+@dataclass
+class AppConfig:
+    environment: str
+    enable_statistics: bool
+    enable_browser: bool
+    proxy_url: str
+    random_mode: bool
+    headless: bool
+    timeout: int
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def get_env_config() -> AppConfig:
+    env_type = "github" if os.environ.get("GITHUB_ACTIONS") == "true" else "local"
+    enable_browser_raw = os.environ.get("ENABLE_BROWSER", os.environ.get("ENABLE_SELENIUM", "auto"))
+    timeout = int(os.environ.get("TIMEOUT", "30"))
+
+    if env_type == "github":
+        # GitHub Actions hard-caps job time; force-enable browser fallback and clamp timeout.
+        if enable_browser_raw == "auto":
+            enable_browser_raw = "true"
+        timeout = min(timeout, 120)
+
+    return AppConfig(
+        environment=env_type,
+        enable_statistics=os.environ.get("ENABLE_STATISTICS", "true").lower() == "true",
+        enable_browser=enable_browser_raw.lower() in ("true", "auto"),
+        proxy_url=os.environ.get("PROXY_URL", ""),
+        random_mode=os.environ.get("NS_RANDOM", "true").lower() == "true",
+        headless=os.environ.get("HEADLESS", "true").lower() == "true",
+        timeout=timeout,
+    )
+
+
+def _request_with_impersonate(
+    session: CfSession,
+    method: str,
+    url: str,
+    *,
+    headers: dict,
+    timeout: int,
+    **kwargs,
+) -> cf_requests.Response:
+    """Try each TLS fingerprint in order; fall back to no spoofing if all fail."""
+    for version in IMPERSONATE_VERSIONS:
         try:
-            headers = {
-                'User-Agent': "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-                'Cookie': self.cookie
-            }
-            
-            all_records = []
-            page = 1
-            
-            # 最多查询10页 (GitHub Actions 资源限制)
-            while page <= 10:
-                url = f"https://www.nodeseek.com/api/account/credit/page-{page}"
-                
-                if USE_CURL_CFFI:
-                    try:
-                        response = cf_requests.get(url, headers=headers, timeout=10, impersonate="chrome120")
-                    except:
-                        response = cf_requests.get(url, headers=headers, timeout=10)
-                else:
-                    response = cf_requests.get(url, headers=headers, timeout=10)
-                
-                data = response.json()
-                if not data.get("success") or not data.get("data"):
-                    break
-                    
-                records = data.get("data", [])
-                if not records:
-                    break
-                    
-                all_records.extend(records)
-                page += 1
-                time.sleep(0.3)  # 降低请求频率
-            
-            # 简化统计逻辑
-            signin_records = []
-            for record in all_records:
-                if len(record) >= 4 and "签到收益" in str(record[2]):
-                    signin_records.append({
-                        'amount': record[0],
-                        'description': record[2]
-                    })
-            
-            if not signin_records:
-                return None, "未找到签到记录"
-            
-            total_amount = sum(r['amount'] for r in signin_records[:days])
-            count = min(len(signin_records), days)
-            average = round(total_amount / count, 2) if count > 0 else 0
-            
-            stats = {
-                'total_amount': total_amount,
-                'average': average,
-                'days_count': count,
-                'period': f"近{days}天"
-            }
-            
-            return stats, "查询成功"
-            
+            return session.request(method, url, headers=headers, timeout=timeout, impersonate=version, **kwargs)
         except Exception as e:
-            return None, f"统计查询异常: {str(e)}"
+            logging.debug("impersonate=%s failed: %s", version, e)
+    logging.warning("All curl_cffi impersonate versions failed, falling back to no TLS spoofing")
+    return session.request(method, url, headers=headers, timeout=timeout, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# HTTP signer
+# ---------------------------------------------------------------------------
+
 
 class HTTPSigner:
-    """HTTP 签到器 (轻量级方案)"""
-    
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: AppConfig):
         self.config = config
-        self.session = None
-        
-    def create_session(self, use_proxy: bool = False):
-        """创建 HTTP 会话"""
-        if USE_CURL_CFFI:
-            self.session = cf_requests.Session()
-        else:
-            self.session = cf_requests.Session()
-            
-        if use_proxy and self.config['proxy_url']:
-            proxies = {
-                'http': self.config['proxy_url'],
-                'https': self.config['proxy_url']
-            }
-            if hasattr(self.session, 'proxies'):
-                self.session.proxies.update(proxies)
-                
-    def get_headers(self, cookie: str) -> Dict[str, str]:
-        """获取请求头"""
-        return {
-            'Accept': 'application/json, text/plain, */*',
-            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive',
-            'Content-Type': 'application/json',
-            'Cookie': cookie,
-            'Host': 'www.nodeseek.com',
-            'Origin': 'https://www.nodeseek.com',
-            'Referer': 'https://www.nodeseek.com/board',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-            'X-Requested-With': 'XMLHttpRequest'
-        }
-    
-    def signin(self, cookie: str, use_proxy: bool = False) -> SigninResult:
-        """HTTP 签到"""
-        try:
-            self.create_session(use_proxy)
-            headers = self.get_headers(cookie)
-            
-            # 随机延迟
-            delay = random.uniform(1, 3)
-            time.sleep(delay)
-            
-            # 构造签到请求
-            random_param = "true" if self.config['random_mode'] else "false"
-            url = f"https://www.nodeseek.com/api/attendance?random={random_param}"
-            
-            # 发送请求
-            if USE_CURL_CFFI:
-                try:
-                    response = self.session.post(
-                        url, headers=headers, json={}, 
-                        timeout=self.config['timeout'],
-                        impersonate="chrome120"
-                    )
-                except:
-                    response = self.session.post(url, headers=headers, json={}, timeout=self.config['timeout'])
-            else:
-                response = self.session.post(url, headers=headers, json={}, timeout=self.config['timeout'])
-            
-            # 解析响应
-            if response.status_code == 200:
-                try:
-                    result = response.json()
-                    if result.get('success'):
-                        gain = result.get('gain', 0)
-                        current = result.get('current', 0)
-                        message = f"签到成功！今天获得 {gain} 个鸡腿，总计 {current} 个鸡腿"
-                        method = "proxy" if use_proxy else "http"
-                        return SigninResult(True, message, method)
-                    else:
-                        return SigninResult(False, result.get('message', '签到失败'), "http")
-                except json.JSONDecodeError:
-                    return SigninResult(False, f"响应解析失败: {response.text[:100]}", "http")
-            
-            elif response.status_code == 500:
-                try:
-                    result = response.json()
-                    message = result.get('message', '')
-                    if any(keyword in message for keyword in ['已完成签到', '已签到', '重复操作']):
-                        return SigninResult(True, f"今日已签到: {message}", "http")
-                    else:
-                        return SigninResult(False, f"服务器错误: {message}", "http")
-                except:
-                    return SigninResult(False, f"服务器 500 错误", "http")
-            
-            elif response.status_code == 401:
-                # Cookie过期或无效
-                return SigninResult(False, "Cookie已过期，请手动更新", "http", cookie_expired=True)
-            
-            elif response.status_code == 403:
-                return SigninResult(False, "403 Forbidden - 可能被 Cloudflare 拦截", "http")
-                
-            elif response.status_code == 302:
-                # 重定向通常意味着未登录
-                return SigninResult(False, "302重定向 - Cookie可能已过期", "http", cookie_expired=True)
-            
-            else:
-                # 检查响应文本是否包含登录页面特征
-                response_text = response.text.lower()
-                if any(keyword in response_text for keyword in ['login', 'signin', 'sign in', '登录', '请登录']):
-                    return SigninResult(False, f"HTTP {response.status_code} - Cookie可能已过期", "http", cookie_expired=True)
-                else:
-                    return SigninResult(False, f"HTTP {response.status_code} 错误", "http")
-                
-        except Exception as e:
-            return SigninResult(False, f"HTTP 签到异常: {str(e)}", "http")
+        self.session: Optional[CfSession] = None
 
-class SeleniumSigner:
-    """Selenium 签到器 (终极方案)"""
-    
-    def __init__(self, config: Dict[str, Any]):
-        self.config = config
-        self.driver = None
-        
-    def create_driver(self):
-        """创建 WebDriver"""
-        if not SELENIUM_AVAILABLE:
-            raise ImportError("Selenium 不可用")
-            
-        chrome_options = Options()
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument("--disable-gpu")
-        chrome_options.add_argument("--window-size=1920,1080")
-        chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-        
-        if self.config['headless']:
-            chrome_options.add_argument("--headless=new")
-            
-        chrome_options.add_argument(
-            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
-        )
-        
-        try:
-            self.driver = uc.Chrome(options=chrome_options)
-        except:
-            # GitHub Actions fallback
-            self.driver = webdriver.Chrome(options=chrome_options)
-            
-        # 隐藏自动化特征
-        self.driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-            "source": """
-                Object.defineProperty(navigator, 'webdriver', {
-                    get: () => undefined
-                });
-            """
-        })
-        
+    def _build_session(self) -> CfSession:
+        session = cf_requests.Session()
+        if self.config.proxy_url:
+            session.proxies.update({"http": self.config.proxy_url, "https": self.config.proxy_url})
+        return session
+
+    def get_headers(self, cookie: str) -> dict:
+        return {
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Content-Type": "application/json",
+            "Cookie": cookie,
+            "Host": "www.nodeseek.com",
+            "Origin": "https://www.nodeseek.com",
+            "Referer": "https://www.nodeseek.com/board",
+            "User-Agent": DEFAULT_USER_AGENT,
+            "X-Requested-With": "XMLHttpRequest",
+        }
+
     def signin(self, cookie: str) -> SigninResult:
-        """Selenium 签到"""
         try:
-            self.create_driver()
-            
-            # 访问网站
-            self.driver.get("https://www.nodeseek.com")
-            WebDriverWait(self.driver, 30).until(
-                EC.presence_of_element_located((By.TAG_NAME, "body"))
+            self.session = self._build_session()
+            if self.config.random_mode:
+                time.sleep(random.uniform(1, 3))
+            url = f"https://www.nodeseek.com/api/attendance?random={'true' if self.config.random_mode else 'false'}"
+            response = _request_with_impersonate(
+                self.session, "POST", url, headers=self.get_headers(cookie), timeout=self.config.timeout, json={},
             )
-            
-            # 添加 Cookie
+            return self._classify_attendance_response(response)
+        except Exception as e:
+            return SigninResult(False, f"HTTP signin exception: {e}", "http")
+
+    @staticmethod
+    def _classify_attendance_response(response: cf_requests.Response) -> SigninResult:
+        status = response.status_code
+
+        match status:
+            case 200:
+                try:
+                    result = response.json()
+                except json.JSONDecodeError:
+                    return SigninResult(False, f"Response parse failed: {response.text[:100]}", "http")
+                if result.get("success"):
+                    return SigninResult(
+                        True,
+                        f"Signin success! Today +{result.get('gain', 0)} drumsticks, total {result.get('current', 0)}",
+                        "http",
+                    )
+                return SigninResult(False, result.get("message", "Signin failed"), "http")
+
+            case 500:
+                try:
+                    message = response.json().get("message", "")
+                except (json.JSONDecodeError, ValueError):
+                    return SigninResult(False, "Server 500 error", "http")
+                if any(k in message for k in ("已完成签到", "已签到", "重复操作")):
+                    return SigninResult(True, f"Already signed in: {message}", "http")
+                return SigninResult(False, f"Server error: {message}", "http")
+
+            case 401:
+                return SigninResult(False, "Cookie expired, please update manually", "http", cookie_expired=True)
+            case 403:
+                return SigninResult(False, "403 Forbidden — possibly blocked by Cloudflare", "http")
+            case 302:
+                return SigninResult(False, "302 redirect — cookie likely expired", "http", cookie_expired=True)
+
+            case _:
+                body = response.text.lower()
+                if any(k in body for k in ("login", "signin", "sign in", "登录", "请登录")):
+                    return SigninResult(False, f"HTTP {status} — cookie likely expired", "http", cookie_expired=True)
+                return SigninResult(False, f"HTTP {status} error", "http")
+
+
+# ---------------------------------------------------------------------------
+# Playwright signer
+# ---------------------------------------------------------------------------
+
+
+class PlaywrightSigner:
+    def __init__(self, config: AppConfig):
+        self.config = config
+        self._playwright: Optional[Playwright] = None
+        self._browser: Optional[Browser] = None
+        self._context: Optional[BrowserContext] = None
+        self._page: Optional[Page] = None
+
+    def _start(self) -> None:
+        self._playwright = sync_playwright().start()
+        self._browser = self._playwright.chromium.launch(
+            headless=self.config.headless,
+            args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+        )
+        self._context = self._browser.new_context(
+            viewport={"width": 1920, "height": 1080},
+            user_agent=DEFAULT_USER_AGENT,
+        )
+        # Runs before any page script: hides navigator.webdriver.
+        self._context.add_init_script(
+            "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
+        )
+        self._page = self._context.new_page()
+
+    def _stop(self) -> None:
+        if self._context is not None:
+            self._context.close()
+        if self._browser is not None:
+            self._browser.close()
+        if self._playwright is not None:
+            self._playwright.stop()
+
+    def signin(self, cookie: str) -> SigninResult:
+        try:
+            self._start()
+            assert self._page is not None and self._context is not None
+
+            self._page.goto("https://www.nodeseek.com")
+            self._page.wait_for_selector("body", timeout=30_000)
+
             for item in cookie.split(";"):
                 try:
                     name, value = item.strip().split("=", 1)
-                    self.driver.add_cookie({
-                        "name": name,
-                        "value": value,
-                        "domain": ".nodeseek.com",
-                        "path": "/",
-                    })
-                except:
+                except ValueError:
                     continue
-                    
-            # 刷新页面
-            self.driver.refresh()
-            time.sleep(3)
-            
-            # 验证登录状态
+                self._context.add_cookies([{
+                    "name": name, "value": value,
+                    "domain": ".nodeseek.com", "path": "/",
+                }])
+
+            self._page.reload()
+            self._page.wait_for_load_state("domcontentloaded")
+
             try:
-                username_element = WebDriverWait(self.driver, 15).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "a.Username"))
-                )
-                username = username_element.text.strip()
-                logging.info(f"🔐 Selenium 登录成功: {username}")
-            except:
-                # 检查是否被重定向到登录页面
-                current_url = self.driver.current_url
-                if "signin" in current_url.lower() or "login" in current_url.lower():
-                    return SigninResult(False, "Selenium - Cookie已过期，需要重新登录", "selenium", cookie_expired=True)
-                else:
-                    return SigninResult(False, "Selenium 登录验证失败", "selenium")
-            
-            # 访问签到页面
-            self.driver.get("https://www.nodeseek.com/board")
-            WebDriverWait(self.driver, 30).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, ".head-info > div"))
+                username = self._page.locator("a.Username").first
+                username.wait_for(timeout=15_000)
+                logging.info("Playwright login verified: %s", (username.text_content() or "").strip())
+            except Exception:
+                if "signin" in self._page.url.lower() or "login" in self._page.url.lower():
+                    return SigninResult(False, "Playwright — cookie expired, re-login required",
+                                        "playwright", cookie_expired=True)
+                return SigninResult(False, "Playwright login verification failed", "playwright")
+
+            self._page.goto("https://www.nodeseek.com/board")
+            head_info = self._page.locator(".head-info > div").first
+            head_info.wait_for(timeout=30_000)
+
+            if not head_info.locator("button").count():
+                return SigninResult(True, f"Already signed in: {(head_info.text_content() or '').strip()}",
+                                    "playwright")
+
+            button_text = "试试手气" if self.config.random_mode else "鸡腿 x 5"
+            button = self._page.locator(
+                f"//div[button[text()='鸡腿 x 5'] and button[text()='试试手气']]"
+                f"//button[text()='{button_text}']"
             )
-            
-            # 检查签到状态
-            head_info = self.driver.find_element(By.CSS_SELECTOR, ".head-info > div")
-            buttons = head_info.find_elements(By.TAG_NAME, "button")
-            
-            if not buttons:
-                # 已签到
-                info_text = head_info.text.strip()
-                return SigninResult(True, f"今日已签到: {info_text}", "selenium")
-            
-            # 执行签到
-            sign_div = WebDriverWait(self.driver, 15).until(
-                EC.presence_of_element_located((
-                    By.XPATH, "//div[button[text()='鸡腿 x 5'] and button[text()='试试手气']]"
-                ))
-            )
-            
-            if self.config['random_mode']:
-                button = sign_div.find_element(By.XPATH, ".//button[text()='试试手气']")
-                mode = "试试手气"
-            else:
-                button = sign_div.find_element(By.XPATH, ".//button[text()='鸡腿 x 5']")
-                mode = "鸡腿 x 5"
-                
-            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", button)
-            time.sleep(0.5)
+            button.scroll_into_view_if_needed()
+            self._page.wait_for_timeout(500)
             button.click()
-            
-            return SigninResult(True, f"Selenium 签到成功 ({mode})", "selenium")
-            
+            return SigninResult(True, f"Playwright signin success ({button_text})", "playwright")
+
         except Exception as e:
             error_msg = str(e)
-            # 检查是否是登录相关错误
-            if any(keyword in error_msg.lower() for keyword in ['login', 'signin', 'authentication', '登录']):
-                return SigninResult(False, f"Selenium - Cookie可能已过期: {error_msg}", "selenium", cookie_expired=True)
-            else:
-                return SigninResult(False, f"Selenium 签到异常: {error_msg}", "selenium")
+            if any(k in error_msg.lower() for k in ("login", "signin", "authentication", "登录")):
+                return SigninResult(False, f"Playwright — cookie may be expired: {error_msg}",
+                                    "playwright", cookie_expired=True)
+            return SigninResult(False, f"Playwright signin exception: {error_msg}", "playwright")
         finally:
-            if self.driver:
-                self.driver.quit()
+            self._stop()
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator
+# ---------------------------------------------------------------------------
+
 
 class NodeSeekHybridSigner:
-    """NodeSeek 混合签到器主类"""
-    
     def __init__(self):
-        self.config = EnvironmentDetector.get_env_config()
+        self.config = get_env_config()
         self.http_signer = HTTPSigner(self.config)
-        self.selenium_signer = SeleniumSigner(self.config) if SELENIUM_AVAILABLE else None
-        
-        logging.info(f"🌍 运行环境: {self.config['environment']}")
-        logging.info(f"📊 统计功能: {'开启' if self.config['enable_statistics'] else '关闭'}")
-        logging.info(f"🤖 Selenium: {'可用' if self.selenium_signer else '不可用'}")
-        
-    def load_accounts(self) -> List[AccountConfig]:
-        """加载账户配置 (来自 nodeseek_sign.py 逻辑)"""
-        accounts = []
-        cookies = []
-        
-        # 解析 Cookie 字符串
-        cookie_str = os.environ.get("NS_COOKIE", "")
-        if cookie_str:
-            cookies = [c.strip() for c in cookie_str.split("&") if c.strip()]
-        
-        # 收集账户配置
-        user = os.environ.get("USER", "")
-        password = os.environ.get("PASS", "")
+        self.playwright_signer = PlaywrightSigner(self.config)
+
+        logging.info("Environment: %s", self.config.environment)
+        logging.info("Statistics: %s", "enabled" if self.config.enable_statistics else "disabled")
+        logging.info("Playwright signer initialized")
+
+    @staticmethod
+    def _parse_cookies() -> List[str]:
+        raw = os.environ.get("NS_COOKIE", "")
+        if not raw:
+            return []
+        return [c.strip() for c in raw.split("&") if c.strip()]
+
+    @staticmethod
+    def _parse_credentials() -> List[Tuple[str, str]]:
+        creds: List[Tuple[str, str]] = []
+        user, password = os.environ.get("USER", ""), os.environ.get("PASS", "")
         if user and password:
-            accounts.append((user, password))
-            
-        # 多账户支持
+            creds.append((user, password))
         index = 1
         while True:
             user = os.environ.get(f"USER{index}", "")
             password = os.environ.get(f"PASS{index}", "")
-            if user and password:
-                accounts.append((user, password))
-                index += 1
-            else:
+            if not (user and password):
                 break
-        
-        # 确保账户和 Cookie 数量匹配
-        max_count = max(len(accounts), len(cookies))
-        while len(accounts) < max_count:
-            accounts.append(("", ""))
+            creds.append((user, password))
+            index += 1
+        return creds
+
+    def load_accounts(self) -> List[AccountConfig]:
+        cookies = self._parse_cookies()
+        creds = self._parse_credentials()
+        # Pad shorter list so each account index has a credential + cookie pair.
+        max_count = max(len(cookies), len(creds))
         while len(cookies) < max_count:
             cookies.append("")
-            
-        # 构建账户配置
-        account_configs = []
-        for i in range(max_count):
-            username, password = accounts[i] if i < len(accounts) else ("", "")
-            cookie = cookies[i] if i < len(cookies) else ""
-            display_name = username if username else f"账号{i+1}"
-            
-            account_configs.append(AccountConfig(
-                index=i+1,
-                display_name=display_name,
-                cookie=cookie,
-                username=username,
-                password=password
-            ))
-            
-        return account_configs
-    
-    def progressive_signin(self, account: AccountConfig) -> SigninResult:
-        """渐进式签到策略"""
-        logging.info(f"🎯 开始签到: {account.display_name}")
-        
-        if not account.cookie:
-            return SigninResult(False, "无 Cookie", "none")
-            
-        # 方法 1: HTTP 签到 (优先)
-        result = self.http_signer.signin(account.cookie)
-        if result.success:
-            logging.info(f"✅ HTTP 签到成功: {account.display_name}")
-            return result
-        else:
-            logging.warning(f"⚠️  HTTP 签到失败: {result.message}")
-            
-        # 方法 2: 代理 HTTP 签到 (如果配置了代理)
-        if self.config['proxy_url']:
-            result = self.http_signer.signin(account.cookie, use_proxy=True)
-            if result.success:
-                logging.info(f"✅ 代理签到成功: {account.display_name}")
-                return result
-            else:
-                logging.warning(f"⚠️  代理签到失败: {result.message}")
-        
-        # 方法 3: Selenium 签到 (终极方案)
-        if (self.selenium_signer and 
-            self.config['enable_selenium'] in ["true", "auto"]):
+        while len(creds) < max_count:
+            creds.append(("", ""))
+
+        accounts: List[AccountConfig] = []
+        for i, ((username, password), cookie) in enumerate(zip(creds, cookies), start=1):
+            display_name = username or f"Account{i}"
+            accounts.append(
+                AccountConfig(
+                    index=i,
+                    display_name=display_name,
+                    cookie=cookie,
+                    username=username,
+                    password=password,
+                )
+            )
+        return accounts
+
+    def _fetch_stats(self, cookie: str, days: int = 30) -> Optional[SigninStats]:
+        if not cookie or not self.config.enable_statistics:
+            return None
+        headers = {
+            "User-Agent": DEFAULT_USER_AGENT,
+            "Cookie": cookie,
+        }
+
+        all_records: list = []
+        page = 1
+        while page <= 10:
+            url = f"https://www.nodeseek.com/api/account/credit/page-{page}"
+            session = cf_requests.Session()
+            response = _request_with_impersonate(session, "GET", url, headers=headers, timeout=10)
+
             try:
-                result = self.selenium_signer.signin(account.cookie)
-                if result.success:
-                    logging.info(f"✅ Selenium 签到成功: {account.display_name}")
-                    return result
-                else:
-                    logging.error(f"❌ Selenium 签到失败: {result.message}")
-            except Exception as e:
-                logging.error(f"❌ Selenium 异常: {str(e)}")
-        
-        # 所有方法都失败
-        return SigninResult(False, "所有签到方法都失败，建议手动更新 Cookie", "failed")
-    
-    def enhance_with_statistics(self, result: SigninResult, cookie: str) -> SigninResult:
-        """增强结果 - 添加统计信息"""
-        if not self.config['enable_statistics'] or not result.success:
-            return result
-            
+                data = response.json()
+            except (json.JSONDecodeError, ValueError):
+                break
+            if not data.get("success") or not data.get("data"):
+                break
+            records = data["data"]
+            if not records:
+                break
+            all_records.extend(records)
+            page += 1
+            time.sleep(0.3)
+
+        signin_records = [
+            {"amount": r[0], "description": r[2]}
+            for r in all_records
+            if len(r) >= 4 and "签到收益" in str(r[2])
+        ]
+        if not signin_records:
+            return None
+
+        sliced = signin_records[:days]
+        count = len(sliced)
+        total = sum(item["amount"] for item in sliced)
+        average = round(total / count, 2) if count else 0
+        return SigninStats(total_amount=total, average=average, days_count=count, period=f"Last {days} days")
+
+    def _try_method(self, name: str, fn: Callable[[], SigninResult]) -> Optional[SigninResult]:
         try:
-            tracker = StatisticsTracker(cookie)
-            stats, msg = tracker.get_signin_stats(30)
-            if stats:
-                result.statistics = stats
-                result.message += f" | 30天已签到{stats['days_count']}天，平均{stats['average']}个鸡腿/天"
+            result = fn()
         except Exception as e:
-            logging.warning(f"⚠️  统计查询失败: {str(e)}")
-            
+            logging.error("%s exception: %s", name, e)
+            return None
+        if result.success:
+            logging.info("%s success", name)
+            return result
+        logging.warning("%s failed: %s", name, result.message)
+        return None
+
+    def progressive_signin(self, account: AccountConfig) -> SigninResult:
+        logging.info("Starting signin: %s", account.display_name)
+        if not account.cookie:
+            return SigninResult(False, "No cookie", "none")
+
+        for method_name, runner in self._signin_pipeline(account.cookie):
+            result = self._try_method(method_name, runner)
+            if result is not None:
+                return result
+        return SigninResult(False, "All signin methods failed, please update cookie manually", "failed")
+
+    def _signin_pipeline(self, cookie: str) -> List[Tuple[str, Callable[[], SigninResult]]]:
+        pipeline: List[Tuple[str, Callable[[], SigninResult]]] = [
+            ("HTTP", lambda: self.http_signer.signin(cookie)),
+        ]
+        if self.config.proxy_url:
+            pipeline.append(("Proxy HTTP", lambda: self._proxy_signin(cookie)))
+        if self.config.enable_browser:
+            pipeline.append(("Playwright", lambda: self.playwright_signer.signin(cookie)))
+        return pipeline
+
+    def _proxy_signin(self, cookie: str) -> SigninResult:
+        proxy = self.config.proxy_url
+        session = cf_requests.Session()
+        session.proxies.update({"http": proxy, "https": proxy})
+        original_session = self.http_signer.session
+        self.http_signer.session = session
+        try:
+            result = self.http_signer.signin(cookie)
+            result.method = "proxy"
+            return result
+        finally:
+            self.http_signer.session = original_session
+
+    def _annotate_with_stats(self, result: SigninResult, cookie: str) -> SigninResult:
+        if not result.success or not self.config.enable_statistics:
+            return result
+        try:
+            stats = self._fetch_stats(cookie)
+        except Exception as e:
+            logging.warning("Statistics query failed: %s", e)
+            return result
+        if stats is None:
+            return result
+        result.statistics = {
+            "total_amount": stats.total_amount,
+            "average": stats.average,
+            "days_count": stats.days_count,
+            "period": stats.period,
+        }
+        result.message += f" | {stats.days_count}-day stats: avg {stats.average} drumsticks/day"
         return result
-    
-    def run(self):
-        """主执行流程"""
-        logging.info("🚀 NodeSeek 混合签到器启动")
+
+    def _process_account(self, account: AccountConfig) -> Tuple[AccountConfig, SigninResult]:
+        logging.info("=" * 30 + " %s " + "=" * 30, account.display_name)
+        result = self.progressive_signin(account)
+        result = self._annotate_with_stats(result, account.cookie)
+        return account, result
+
+    def run(self) -> int:
+        logging.info("NodeSeek hybrid signer starting")
         logging.info("=" * 50)
-        
+
         accounts = self.load_accounts()
         if not accounts:
-            logging.error("❌ 未找到任何账户配置")
-            return
-            
-        logging.info(f"📋 发现 {len(accounts)} 个账户")
-        
-        results = []
-        cookies_updated = False
-        updated_cookies = []
-        expired_accounts = []  # 记录Cookie过期的账户
-        
-        for account in accounts:
-            logging.info(f"\n{'='*30} {account.display_name} {'='*30}")
-            
-            # 执行签到
-            result = self.progressive_signin(account)
-            
-            # 增强统计信息
-            if result.success and account.cookie:
-                result = self.enhance_with_statistics(result, account.cookie)
-            
-            # 记录结果
-            results.append((account, result))
-            
-            if result.success:
-                logging.info(f"✅ {account.display_name}: {result.message}")
-                updated_cookies.append(account.cookie)
-                
-                # 发送通知
-                if NOTIFICATION_AVAILABLE:
-                    try:
-                        send(f"NodeSeek 签到成功", f"{account.display_name}: {result.message}")
-                    except Exception as e:
-                        logging.warning(f"⚠️  通知发送失败: {str(e)}")
-                        
-            else:
-                logging.error(f"❌ {account.display_name}: {result.message}")
-                updated_cookies.append(account.cookie)  # 保持原 Cookie
-                
-                # 检查是否Cookie过期
-                if result.cookie_expired:
-                    expired_accounts.append(account.display_name)
-                    logging.warning(f"🚨 检测到Cookie过期: {account.display_name}")
-                
-                # 发送失败通知
-                if NOTIFICATION_AVAILABLE:
-                    try:
-                        send(f"NodeSeek 签到失败", f"{account.display_name}: {result.message}")
-                    except:
-                        pass
-        
-        # 发送Cookie过期的TG通知
-        if expired_accounts:
-            expired_msg = f"🚨 <b>NodeSeek Cookie过期提醒</b>\n\n"
-            expired_msg += f"以下账户的Cookie已过期，需要手动更新：\n"
-            for i, account_name in enumerate(expired_accounts, 1):
-                expired_msg += f"{i}. {account_name}\n"
-            expired_msg += f"\n请到GitHub仓库的Variables页面更新NS_COOKIE变量"
-            
-            # 发送TG通知
-            if send_telegram_message(expired_msg):
-                logging.info(f"✅ 已通过TG通知Cookie过期: {len(expired_accounts)}个账户")
-            else:
-                logging.warning(f"⚠️  TG通知发送失败，但检测到{len(expired_accounts)}个Cookie过期")
-        
-        # Cookie检查完毕 - 用户可根据TG通知手动更新过期Cookie
-        logging.info("ℹ️  Cookie状态已检查完毕，过期Cookie已通过TG通知")
-        
-        # 生成摘要报告
-        success_count = sum(1 for _, result in results if result.success)
-        logging.info(f"\n{'='*50}")
-        logging.info(f"📊 签到完成: {success_count}/{len(results)} 成功")
-        
-        # 构建详细的签到结果消息
-        summary_msg = f"🌟 <b>NodeSeek 签到报告</b>\n"
-        summary_msg += f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-        
-        # 成功账户详情
-        success_results = [(acc, res) for acc, res in results if res.success]
-        if success_results:
-            summary_msg += f"✅ <b>签到成功 ({len(success_results)}个账户)</b>\n"
-            for i, (account, result) in enumerate(success_results, 1):
-                # 提取鸡腿信息
-                if "鸡腿" in result.message:
-                    drumstick_info = result.message.split("：")[-1] if "：" in result.message else result.message
-                    summary_msg += f"📱 账户{i}：{drumstick_info}\n"
-                else:
-                    summary_msg += f"📱 账户{i}：{result.message}\n"
-            summary_msg += "\n"
-        
-        # 失败账户处理
-        failed_results = [(acc, res) for acc, res in results if not res.success]
-        if failed_results:
-            failed_count = len(failed_results)
-            expired_count = len(expired_accounts)
-            logging.warning(f"⚠️  {failed_count}个账户签到失败 (其中{expired_count}个Cookie过期)")
-            
-            summary_msg += f"❌ <b>签到失败 ({failed_count}个账户)</b>\n"
-            for i, (account, result) in enumerate(failed_results, 1):
-                summary_msg += f"🚫 账户{i}：{result.message}\n"
-            summary_msg += "\n"
-            
-            if expired_count > 0:
-                summary_msg += f"🚨 <b>Cookie过期：{expired_count}个账户</b>\n"
-                summary_msg += f"💡 请及时更新过期的Cookie以确保正常签到\n\n"
-        
-        # 添加统计摘要
-        summary_msg += f"📊 <b>统计摘要</b>\n"
-        summary_msg += f"✅ 成功：{success_count}个\n"
-        summary_msg += f"❌ 失败：{len(failed_results)}个\n"
-        summary_msg += f"📈 成功率：{(success_count/len(results)*100):.1f}%"
-        
-        # 发送TG通知（无论成功失败都发送）
-        if send_telegram_message(summary_msg):
-            logging.info("✅ 签到结果已通过TG推送")
-        else:
-            logging.warning("⚠️  TG推送失败，但签到任务已完成")
-            
-        logging.info("🏁 混合签到器执行完毕")
+            logging.error("No account configuration found")
+            return 0
+        logging.info("Found %d account(s)", len(accounts))
 
-def main():
-    """主函数"""
+        results: List[Tuple[AccountConfig, SigninResult]] = []
+        expired: List[str] = []
+        for account in accounts:
+            acc, result = self._process_account(account)
+            results.append((acc, result))
+            if not result.success:
+                logging.error("%s: %s", acc.display_name, result.message)
+                if result.cookie_expired:
+                    expired.append(acc.display_name)
+                    logging.warning("Cookie expired detected: %s", acc.display_name)
+
+        if expired:
+            logging.warning("%d expired cookie(s): %s", len(expired), ", ".join(expired))
+
+        logging.info("Cookie check complete")
+        success_count = sum(1 for _, r in results if r.success)
+        logging.info("=" * 50)
+        logging.info("Done: %d/%d succeeded", success_count, len(results))
+        logging.info("Hybrid signer finished")
+        return success_count
+
+
+def main() -> int:
     try:
-        signer = NodeSeekHybridSigner()
-        signer.run()
+        success = NodeSeekHybridSigner().run()
     except KeyboardInterrupt:
-        logging.info("⏹️  用户中断执行")
+        logging.info("User interrupted")
+        return 1
     except Exception as e:
-        logging.error(f"💥 执行异常: {str(e)}")
+        logging.error("Execution exception: %s", e)
         logging.debug(traceback.format_exc())
+        return 1
+    return 0 if success > 0 else 1
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

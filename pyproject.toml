@@ -1,0 +1,25 @@
+[project]
+name = "nodeseek-hybrid-signin"
+version = "1.0.0"
+description = "NodeSeek Hybrid Signin"
+authors = [
+    {name = "Me0wo"},
+]
+readme = "README.md"
+requires-python = ">=3.10,<4"
+license = "MIT"
+dependencies = [
+    "curl-cffi>=0.15.0",
+    "playwright>=1.40.0",
+    "python-dateutil>=2.9.0",
+]
+
+[project.urls]
+Repository = "https://github.com/Me0wo/nodeseek-hybrid-signin"
+
+[tool.poetry]
+package-mode = false
+
+[build-system]
+requires = ["poetry-core>=2.0.0"]
+build-backend = "poetry.core.masonry.api"

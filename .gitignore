@@ -1,0 +1,20 @@
+.venv/
+venv/
+env/
+
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+*.log
+screenshots/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+.sisyphus/
+.opencode/

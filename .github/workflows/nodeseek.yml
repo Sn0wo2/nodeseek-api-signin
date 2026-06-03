@@ -2,20 +2,20 @@ name: NodeSeek Sign
 
 on:
   schedule:
-      # UTC+8 00:00
+    # 00:00 Asia/Shanghai (16:00 UTC)
     - cron: '0 16 * * *'
   workflow_dispatch:
     inputs:
       enable_statistics:
-        description: '是否启用30天统计'
+        description: 'Enable 30-day statistics'
         required: false
         default: 'true'
         type: choice
         options:
           - 'true'
           - 'false'
-      enable_selenium:
-        description: 'Selenium 模式'
+      enable_browser:
+        description: 'Playwright browser fallback (auto/true/false)'
         required: false
         default: 'auto'
         type: choice
@@ -24,7 +24,7 @@ on:
           - 'true'
           - 'false'
       random_mode:
-        description: '签到模式 (false=鸡腿x5, true=试试手气)'
+        description: 'Signin mode (false=chicken legs x5, true=random)'
         required: false
         default: 'true'
         type: choice
@@ -38,58 +38,43 @@ env:
 jobs:
   signin:
     runs-on: ubuntu-latest
-    
+
     steps:
-    - name: 检出代码
+    - name: Checkout
       uses: actions/checkout@v4
-      
-    - name: 设置 Python 环境
-      uses: actions/setup-python@v4
+
+    - name: Setup Python
+      uses: actions/setup-python@v5
       with:
-        python-version: '3.11'
-        cache: 'pip'
-        
-    - name: 安装 Chrome 浏览器
-      uses: browser-actions/setup-chrome@latest
-      with:
-        chrome-version: stable
-        
-    - name: 安装 ChromeDriver
-      uses: nanasess/setup-chromedriver@v2
-      
-    - name: 安装 Python 依赖
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        
-    - name: 配置环境变量
+        python-version-file: 'pyproject.toml'
+        cache: 'poetry'
+
+    - name: Install Poetry
+      run: pip install poetry
+
+    - name: Install dependencies
+      run: poetry install --no-interaction
+
+    - name: Install Playwright browser
+      run: poetry run playwright install chromium --with-deps
+
+    - name: Set env
       run: |
         echo "GITHUB_ACTIONS=true" >> $GITHUB_ENV
         echo "ENABLE_STATISTICS=${{ github.event.inputs.enable_statistics || 'true' }}" >> $GITHUB_ENV
-        echo "ENABLE_SELENIUM=${{ github.event.inputs.enable_selenium || 'auto' }}" >> $GITHUB_ENV
+        echo "ENABLE_BROWSER=${{ github.event.inputs.enable_browser || 'auto' }}" >> $GITHUB_ENV
         echo "NS_RANDOM=${{ github.event.inputs.random_mode || 'true' }}" >> $GITHUB_ENV
         echo "HEADLESS=true" >> $GITHUB_ENV
         echo "TIMEOUT=60" >> $GITHUB_ENV
-        
-    - name: 执行 NodeSeek 签到
+
+    - name: Run signin
       env:
         NS_COOKIE: ${{ vars.NS_COOKIE }}
         GITHUB_REPOSITORY: ${{ github.repository }}
         PROXY_URL: ${{ vars.PROXY_URL }}
-        TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-        TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-      run: |
-        echo "🚀 开始执行 NodeSeek 混合签到..."
-        echo "📊 统计功能: $ENABLE_STATISTICS"
-        echo "🤖 Selenium 模式: $ENABLE_SELENIUM" 
-        echo "🎲 随机模式: $NS_RANDOM"
-        echo "🌐 代理设置: ${{ vars.PROXY_URL && '已配置' || '未配置' }}"
-        echo "📢 TG通知: ${{ secrets.TG_BOT_TOKEN && secrets.TG_CHAT_ID && '已配置' || '未配置' }}"
-        echo "📈 账户数量: $(echo "$NS_COOKIE" | tr '&' '\n' | wc -l)"
-        
-        python nodeseek_hybrid.py
-        
-    - name: 上传运行日志
+      run: poetry run python nodeseek_hybrid.py
+
+    - name: Upload logs
       if: always()
       uses: actions/upload-artifact@v4
       with:
@@ -98,10 +83,3 @@ jobs:
           *.log
           screenshots/
         retention-days: 7
-        
-    - name: 发送运行结果通知
-      if: failure()
-      run: |
-        echo "❌ NodeSeek 签到执行失败"
-        echo "请检查 Cookie 是否过期或网络连接是否正常"
-        echo "可访问 Actions 页面查看详细日志"
