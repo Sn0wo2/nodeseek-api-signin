@@ -15,7 +15,7 @@ on:
           - 'true'
           - 'false'
       random_mode:
-        description: 'Signin mode (false=chicken legs x5, true=random)'
+        description: 'Sign-in mode (false=chicken legs x5, true=random)'
         required: false
         default: 'true'
         type: choice
@@ -25,6 +25,9 @@ on:
 
 env:
   TZ: Asia/Shanghai
+
+permissions:
+  contents: read
 
 jobs:
   signin:
@@ -51,17 +54,17 @@ jobs:
 
     - name: Set env
       run: |
-        echo "GITHUB_ACTIONS=true" >> $GITHUB_ENV
         echo "ENABLE_STATISTICS=${{ github.event.inputs.enable_statistics || 'true' }}" >> $GITHUB_ENV
         echo "NS_RANDOM=${{ github.event.inputs.random_mode || 'true' }}" >> $GITHUB_ENV
         echo "TIMEOUT=60" >> $GITHUB_ENV
 
-    - name: Run signin
+    - name: Run sign-in
       env:
-        NS_COOKIE: ${{ vars.NS_COOKIE }}
+        NS_COOKIE: ${{ secrets.NS_COOKIE }}
+        NS_COOKIE_WRITE_TOKEN: ${{ secrets.NS_COOKIE_WRITE_TOKEN }}
         GITHUB_REPOSITORY: ${{ github.repository }}
         PROXY_URL: ${{ vars.PROXY_URL }}
-      run: poetry run python nodeseek_api_signin.py
+      run: poetry run python -m nodeseek_signin
 
     - name: Upload logs
       if: always()
