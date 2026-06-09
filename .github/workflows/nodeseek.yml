@@ -1,4 +1,4 @@
-name: NodeSeek Sign
+name: NodeSeek Signin
 
 on:
   schedule:
@@ -15,13 +15,18 @@ on:
           - 'true'
           - 'false'
       random_mode:
-        description: 'Sign-in mode (false=chicken legs x5, true=random)'
+        description: 'Signin mode (false=chicken legs x5, true=random)'
         required: false
         default: 'true'
         type: choice
         options:
           - 'true'
           - 'false'
+      base_url:
+        description: 'NodeSeek base URL'
+        required: false
+        default: ''
+        type: string
 
 env:
   TZ: Asia/Shanghai
@@ -58,11 +63,12 @@ jobs:
         echo "NS_RANDOM=${{ github.event.inputs.random_mode || 'true' }}" >> $GITHUB_ENV
         echo "TIMEOUT=60" >> $GITHUB_ENV
 
-    - name: Run sign-in
+    - name: Run signin
       env:
         NS_COOKIE: ${{ secrets.NS_COOKIE }}
         NS_COOKIE_WRITE_TOKEN: ${{ secrets.NS_COOKIE_WRITE_TOKEN }}
         GITHUB_REPOSITORY: ${{ github.repository }}
+        BASE_URL: ${{ github.event.inputs.base_url || vars.BASE_URL }}
         PROXY_URL: ${{ vars.PROXY_URL }}
       run: poetry run python -m nodeseek_signin
 

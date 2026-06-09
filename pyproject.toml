@@ -1,7 +1,7 @@
 [project]
 name = "nodeseek-api-signin"
 version = "1.0.0"
-description = "NodeSeek API sign-in"
+description = "NodeSeek API signin"
 authors = [
     {name = "Me0wo"},
 ]
