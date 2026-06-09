@@ -3,27 +3,21 @@ from __future__ import annotations
 import logging
 import traceback
 
-from nodeseek_signin.app import NodeSeekSignInApp
+from nodeseek_signin.app import App
 
 
-def configure_logging() -> None:
+def main() -> int:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
         handlers=[logging.StreamHandler()],
     )
-
-
-def main() -> int:
-    configure_logging()
     try:
-        success = NodeSeekSignInApp().run()
+        return 0 if App().run() > 0 else 1
     except KeyboardInterrupt:
-        logging.info("User interrupted")
+        logging.info("Interrupted")
         return 1
     except Exception as exc:
-        logging.error("Execution exception: %s", exc)
+        logging.error("Fatal: %s", exc)
         logging.debug(traceback.format_exc())
         return 1
-
-    return 0 if success > 0 else 1

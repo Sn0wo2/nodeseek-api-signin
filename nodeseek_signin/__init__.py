@@ -1,3 +1,3 @@
-from nodeseek_signin.app import NodeSeekSignInApp
+from nodeseek_signin.app import App
 
-__all__ = ["NodeSeekSignInApp"]
+__all__ = ["App"]
