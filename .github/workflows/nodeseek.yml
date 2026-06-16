@@ -9,19 +9,13 @@ on:
       enable_statistics:
         description: 'Enable 30-day statistics'
         required: false
-        default: 'true'
-        type: choice
-        options:
-          - 'true'
-          - 'false'
+        default: true
+        type: boolean
       random_mode:
         description: 'Signin mode (false=chicken legs x5, true=random)'
         required: false
-        default: 'true'
-        type: choice
-        options:
-          - 'true'
-          - 'false'
+        default: true
+        type: boolean
       base_url:
         description: 'NodeSeek base URL'
         required: false
