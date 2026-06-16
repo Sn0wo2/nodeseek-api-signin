@@ -12,7 +12,7 @@ on:
         default: true
         type: boolean
       random_mode:
-        description: 'Signin mode (false=chicken legs x5, true=random)'
+        description: 'Signin mode (true=random, false=chicken legs x5)'
         required: false
         default: true
         type: boolean
@@ -36,17 +36,18 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Setup Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
-
     - name: Install Poetry
       uses: snok/install-poetry@v1
       with:
         version: latest
         virtualenvs-create: true
         virtualenvs-in-project: true
+
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: 'poetry'
 
     - name: Install dependencies
       run: poetry install --no-interaction
@@ -66,12 +67,3 @@ jobs:
         BASE_URL: ${{ github.event.inputs.base_url || vars.BASE_URL }}
         PROXY_URL: ${{ vars.PROXY_URL }}
       run: poetry run python -m nodeseek_signin
-
-    - name: Upload logs
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: nodeseek-logs-${{ github.run_number }}
-        path: |
-          *.log
-        retention-days: 7
