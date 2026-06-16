@@ -22,12 +22,13 @@ poetry run python -m nodeseek_signin
 - `BASE_URL`: optional NodeSeek base URL. Defaults to `https://www.nodeseek.com`.
 - `NS_RANDOM`: optional. Set to `true` to use random signin mode.
 - `ENABLE_STATISTICS`: optional. Set to `false` to skip statistics lookup.
-- `COOKIE_STORE`: optional cookie write-back backend. Use `auto`, `github`,
-  `qinglong`, or `none`. Defaults to `auto`.
+- `COOKIE_STORE`: required cookie write-back backend. Set it explicitly to `github`,
+  `qinglong`, or `none`; `auto` is not supported.
 - `COOKIE_WRITEBACK`: optional write-back switch. Defaults to enabled for
-  explicit `github`/`qinglong` stores and in GitHub Actions, disabled locally.
+  `github`/`qinglong` stores and disabled for `none`.
 - `PROXY_URL`: optional HTTP/HTTPS proxy URL.
 - `TIMEOUT`: optional request timeout in seconds.
+- `LOG_LEVEL`: optional logging level. Set to `DEBUG` to print HTTP response HTML.
 
 ## GitHub Actions Secrets
 

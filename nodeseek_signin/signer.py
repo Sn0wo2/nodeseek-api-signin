@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import logging
 import random
 import time
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from niquests import Response, Session
-from niquests.exceptions import RequestException
+from curl_cffi.requests import Response, Session
+from curl_cffi.requests.exceptions import RequestException
 
 
 @dataclass
@@ -39,7 +40,7 @@ def sign_in(
     proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
 
     try:
-        with Session() as s:
+        with Session(impersonate="firefox") as s:
             resp = s.post(
                 url,
                 headers=_headers(base, cookie),

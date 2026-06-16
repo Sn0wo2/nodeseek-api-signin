@@ -6,7 +6,6 @@ import os
 import subprocess
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from typing import cast
 
 
 class CookieStore(ABC):
@@ -14,30 +13,23 @@ class CookieStore(ABC):
     def save(self, value: str) -> bool: ...
 
 
-def create_cookie_store(*, store: str, enabled: bool) -> CookieStore | None:
-    if not enabled or store == "none":
+def create_cookie_store(store: str) -> CookieStore | None:
+    if store not in ("github", "qinglong", "none"):
+        logging.warning("Cookie store %s not supported, failback to none", store)
         return None
 
-    resolved = store
-    if store == "auto":
-        resolved = "qinglong" if hasattr(builtins, "QLAPI") else "github"
+    if store == "none":
+        return None
 
-    if resolved == "qinglong":
-        return QingLongCookieStore(enabled=enabled)
-    return GitHubCookieStore(enabled=enabled)
+    if store == "qinglong":
+        return QingLongCookieStore()
+    return GitHubCookieStore()
 
 
 class GitHubCookieStore(CookieStore):
     SECRET_NAME: str = "NS_COOKIE"
 
-    def __init__(self, *, enabled: bool) -> None:
-        self._enabled = enabled
-
     def save(self, value: str) -> bool:
-        if not self._enabled:
-            logging.info("NS_COOKIE write-back disabled")
-            return False
-
         token = os.environ.get("NS_COOKIE_WRITE_TOKEN") or os.environ.get("GH_TOKEN")
         repo = os.environ.get("GITHUB_REPOSITORY", "")
         if not token or not repo:
@@ -75,14 +67,10 @@ class GitHubCookieStore(CookieStore):
 class QingLongCookieStore(CookieStore):
     ENV_NAME: str = "NS_COOKIE"
 
-    def __init__(self, *, enabled: bool, api: object | None = None) -> None:
-        self._enabled = enabled
+    def __init__(self, *, api: object | None = None) -> None:
         self._api = api if api is not None else getattr(builtins, "QLAPI", None)
 
     def save(self, value: str) -> bool:
-        if not self._enabled:
-            logging.info("QingLong NS_COOKIE write-back disabled")
-            return False
         if self._api is None:
             logging.warning("QingLong write-back requires QLAPI (run inside QingLong)")
             return False
@@ -130,7 +118,7 @@ def _data_list(result: object) -> list[dict[str, object]]:
     data = d.get("data")
     if not isinstance(data, list):
         return []
-    return [item for raw in cast("list[object]", data) if (item := _as_dict(raw)) is not None]
+    return [item for raw in data if (item := _as_dict(raw)) is not None]
 
 
 def _msg(result: object) -> str:
@@ -145,4 +133,4 @@ def _msg(result: object) -> str:
 def _as_dict(v: object) -> dict[str, object] | None:
     if not isinstance(v, Mapping):
         return None
-    return {k: val for k, val in cast("Mapping[object, object]", v).items() if isinstance(k, str)}
+    return {k: val for k, val in v.items() if isinstance(k, str)}

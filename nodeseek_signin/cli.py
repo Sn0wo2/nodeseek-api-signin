@@ -1,14 +1,24 @@
 from __future__ import annotations
 
 import logging
+import os
 import traceback
 
 from nodeseek_signin.app import App
 
 
+_LOG_LEVELS = {
+    "CRITICAL": logging.CRITICAL,
+    "ERROR": logging.ERROR,
+    "WARNING": logging.WARNING,
+    "INFO": logging.INFO,
+    "DEBUG": logging.DEBUG,
+}
+
+
 def main() -> int:
     logging.basicConfig(
-        level=logging.INFO,
+        level=_log_level(),
         format="%(asctime)s [%(levelname)s] %(message)s",
         handlers=[logging.StreamHandler()],
     )
@@ -21,3 +31,8 @@ def main() -> int:
         logging.error("Fatal: %s", exc)
         logging.debug(traceback.format_exc())
         return 1
+
+
+def _log_level() -> int:
+    value = (os.environ.get("LOG_LEVEL") or "INFO").strip().upper()
+    return _LOG_LEVELS.get(value, logging.INFO)

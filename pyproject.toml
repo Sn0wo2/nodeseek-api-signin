@@ -9,11 +9,14 @@ readme = "README.md"
 requires-python = ">=3.10,<4"
 license = "MIT"
 dependencies = [
-    "niquests>=3.15.2",
+    "curl_cffi>=0.15.0",
 ]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [project.urls]
-Repository = "https://github.com/Me0wo/nodeseek-hybrid-signin"
+Repository = "https://github.com/Sn0wo2/nodeseek-api-signin"
 
 [tool.poetry]
 package-mode = false

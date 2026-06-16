@@ -16,17 +16,6 @@ def _load_cookies() -> list[str]:
     return [c.strip() for c in raw.split("&") if c.strip()]
 
 
-def _bool(name: str, default: bool) -> bool:
-    val = (os.environ.get(name) or "").strip().lower()
-    if not val:
-        return default
-    if val in ("1", "true", "yes", "y", "on"):
-        return True
-    if val in ("0", "false", "no", "n", "off"):
-        return False
-    raise ValueError(f"{name} must be a boolean value")
-
-
 def _int(name: str, default: int, *, minimum: int = 1) -> int:
     val = (os.environ.get(name) or "").strip()
     if not val:
@@ -36,30 +25,20 @@ def _int(name: str, default: int, *, minimum: int = 1) -> int:
         raise ValueError(f"{name} must be >= {minimum}")
     return n
 
-
 def _cookie_store_name() -> str:
     val = (os.environ.get("COOKIE_STORE") or "").strip().lower()
     if val in ("github", "qinglong", "none"):
         return val
-    return "auto"
-
-
-def _default_writeback(store: str) -> bool:
-    if store in ("github", "qinglong"):
-        return True
-    return os.environ.get("GITHUB_ACTIONS") == "true"
-
+    raise ValueError("COOKIE_STORE must be set to github, qinglong, or none")
 
 class App:
     def __init__(self) -> None:
-        store_name = _cookie_store_name()
         self._base_url = (os.environ.get("BASE_URL") or _BASE_URL).strip().rstrip("/")
-        self._random = _bool("NS_RANDOM", True)
+        self._random = (os.environ.get("NS_RANDOM") or "true").strip().lower() == "true"
         self._timeout = _int("TIMEOUT", 30)
         self._proxy = os.environ.get("PROXY_URL", "").strip()
         self._cookie_store: CookieStore | None = create_cookie_store(
-            store=store_name,
-            enabled=False if store_name == "none" else _bool("COOKIE_WRITEBACK", _default_writeback(store_name)),
+            store = _cookie_store_name()
         )
 
     def run(self) -> int:
@@ -81,8 +60,7 @@ class App:
         return ok
 
     def _sign_one(self, index: int, cookie: str) -> SignInResult:
-        name = f"Account{index}"
-        logging.info("Signing in: %s", name)
+        logging.info("Signing in: %s", index)
 
         result = sign_in(
             cookie,
@@ -93,7 +71,7 @@ class App:
         )
 
         log = logging.info if result.success else logging.error
-        log("%s: %s", name, result.message)
+        log("%s: %s", index, result.message)
         return result
 
     def _write_back(self, cookies: list[str], results: list[SignInResult]) -> None:
@@ -108,4 +86,4 @@ class App:
         if self._cookie_store.save(merged):
             logging.info("NS_COOKIE write-back complete")
         else:
-            logging.warning("NS_COOKIE changed but write-back failed")
+            logging.error("NS_COOKIE changed but write-back failed")
