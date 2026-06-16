@@ -68,6 +68,7 @@ jobs:
         NS_COOKIE: ${{ secrets.NS_COOKIE }}
         NS_COOKIE_WRITE_TOKEN: ${{ secrets.NS_COOKIE_WRITE_TOKEN }}
         GITHUB_REPOSITORY: ${{ github.repository }}
+        COOKIE_STORE: ${{ vars.COOKIE_STORE || 'github' }}
         BASE_URL: ${{ github.event.inputs.base_url || vars.BASE_URL }}
         PROXY_URL: ${{ vars.PROXY_URL }}
       run: poetry run python -m nodeseek_signin
