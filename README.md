@@ -52,3 +52,65 @@ built-in `QLAPI` (injected into the task runtime), so no URL, token, or API
 credentials are needed. The `NS_COOKIE` environment variable must already exist
 in QingLong, and the script must run inside the panel (`QLAPI` is unavailable
 otherwise). Multiple accounts still use `&` as the separator.
+
+## About `Signin Mode`
+
+Before you consider adjusting the `Signin Mode`, here's what you need to know.
+
+### Mechanism Overview
+
+The chicken leg reward generation has shifted from an **exponential distribution** to a **binomial distribution**:
+
+| Mechanism | Distribution | Expectation | Variance | Std Dev |
+|-----------|-------------|-------------|----------|---------|
+| Old | Exponential $\text{Exp}(\lambda=0.2)$ | $5$ | $25$ | $5$ |
+| New | Binomial $B(50, 0.1)$ | $5$ | $4.5$ | $\approx 2.12$ |
+
+**Key takeaway**: Both mechanisms share the same mathematical expectation ($5$), but the new one drastically reduces variance to improve user experience.
+
+---
+
+### Old Mechanism: Exponential Distribution
+
+Probability density function:
+
+\[
+f(x) = \lambda e^{-\lambda x} = 0.2 \, e^{-0.2x}, \quad x \geq 0
+\]
+
+where the rate parameter $\lambda = \frac{1}{E[X]} = 0.2$.
+
+**Pain points**:
+- Rolling $1$ chicken leg was far too likely (~$14.84\%$ after flooring), killing motivation
+- Massive variance ($\text{Var}(X) = 25$) created extreme disparity between lucky and unlucky users
+- Rare "jackpot" events: $P(X \geq 40) = e^{-8} \approx 0.335‰$
+
+---
+
+### New Mechanism: Binomial Distribution
+
+Probability mass function:
+
+\[
+P(X = k) = \binom{50}{k} (0.1)^k (0.9)^{50-k}, \quad k = 0, 1, 2, \ldots, 50
+\]
+
+The system enforces a floor of $1$, so actual payout is:
+
+\[
+\text{reward} = \max(X, 1)
+\]
+
+**Improvements**:
+- Probability of getting exactly $1$ drops to ~$0.52\%$ (pre-truncation $P(X=0) \approx 0.51\%$)
+- Variance compressed to $4.5$; most users land in the $3 \sim 7$ range
+- Extreme jackpots ($40+$) are eliminated (theoretical cap is $50$)
+
+---
+
+### Code Locations
+
+- **New mechanism (binomial visualization)**: `ns_raindom_signin.py`
+- **Old mechanism (exponential visualization)**: `ns_random_signin_old.py`
+
+&gt; Note: The old mechanism had the same expectation of $5$, but its exponential tail made rolling $1$ far too common. Hence the distribution was changed.

@@ -22,3 +22,4 @@ tmpcurl_cffi/
 .opencode/
 .slop-rollback/
 .omo/
+.claude
