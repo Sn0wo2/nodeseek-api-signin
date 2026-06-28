@@ -74,9 +74,9 @@ The chicken leg reward generation has shifted from an **exponential distribution
 
 Probability density function:
 
-\[
+$$
 f(x) = \lambda e^{-\lambda x} = 0.2 \, e^{-0.2x}, \quad x \geq 0
-\]
+$$
 
 where the rate parameter $\lambda = \frac{1}{E[X]} = 0.2$.
 
@@ -91,15 +91,15 @@ where the rate parameter $\lambda = \frac{1}{E[X]} = 0.2$.
 
 Probability mass function:
 
-\[
+$$
 P(X = k) = \binom{50}{k} (0.1)^k (0.9)^{50-k}, \quad k = 0, 1, 2, \ldots, 50
-\]
+$$
 
 The system enforces a floor of $1$, so actual payout is:
 
-\[
+$$
 \text{reward} = \max(X, 1)
-\]
+$$
 
 **Improvements**:
 - Probability of getting exactly $1$ drops to ~$0.52\%$ (pre-truncation $P(X=0) \approx 0.51\%$)
@@ -113,4 +113,5 @@ The system enforces a floor of $1$, so actual payout is:
 - **New mechanism (binomial visualization)**: `ns_raindom_signin.py`
 - **Old mechanism (exponential visualization)**: `ns_random_signin_old.py`
 
-&gt; Note: The old mechanism had the same expectation of $5$, but its exponential tail made rolling $1$ far too common. Hence the distribution was changed.
+> Note: The old mechanism had the same expectation of $5$, but its exponential tail made rolling $1$ far too common. Hence the distribution was changed.
+> Source: [NodeSeek post #1170](https://www.nodeseek.com/post-1170-1)
